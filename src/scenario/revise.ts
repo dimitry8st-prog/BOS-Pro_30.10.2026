@@ -28,11 +28,9 @@ export async function reviseDraft(store: RunStore, runId: string, newText: strin
     provider: "FixtureProvider",
     variant: "revision",
     body: newText,
-    claims: current.claim_links.map((link) => ({
-      statement: link.statement,
-      source_id: link.source_id,
-      fragment: link.fragment,
-    })),
+    // A changed body has no reviewed claim bindings. Previous links belong
+    // exclusively to the previous revision and cannot approve this text.
+    claims: [],
     sources: snapshot.input.sources.map((source) => ({
       source_id: source.source_id,
       url: source.url,
@@ -40,6 +38,7 @@ export async function reviseDraft(store: RunStore, runId: string, newText: strin
     })),
   };
   const verification = verifyDraft(snapshot.input, draft);
+  verification.grounds.push("Текст изменён: прежние привязки утверждений аннулированы. Нужна новая проверка утверждений по источникам для этой версии.");
   const revision: ArtifactRevision = {
     artifact_id: run.artifact_id,
     revision: current.revision + 1,

@@ -305,6 +305,39 @@ describe("учебный контракт prepare_draft v0.1", () => {
     }
   });
 
+  test("правка текста инвалидирует прежние привязки и блокирует качество после перезапуска", async () => {
+    const dir = await tempDir();
+    try {
+      const store = await DevStore.open(dir);
+      const input = await readJson("fixtures/educational-input.json");
+      const run = finishedRun(await executePrepareDraft(input, { store, root: repoRoot }));
+      const original = await store.readArtifactRevision(run.artifact_id!, 1);
+      assert.equal(original?.verification.status, "pass");
+      for (const text of [
+        "Луна изготовлена из сыра, это доказано исследованием.",
+        original!.text + " Дополнительное неподтверждённое утверждение.",
+      ]) {
+        const revised = await reviseDraft(store, run.run_id, text);
+        assert.equal(revised.outcome, "revised");
+        if (revised.outcome !== "revised") throw new Error("unreachable");
+        assert.notEqual(revised.revision.verification.status, "pass");
+        assert.deepEqual(revised.revision.claim_links, []);
+        assert.equal(revised.revision.verification.blocks_external_action, true);
+        assert.equal(revised.run.quality_gate, "blocked");
+        const shown = parseStdout(await runNode([cli, "show", "--run", run.run_id, "--store", dir]));
+        const persisted = shown.result as { run: RunRecord };
+        assert.equal(persisted.run.quality_gate, "blocked");
+        assert.notEqual(persisted.run.verification?.status, "pass");
+        const unchanged = await reviseDraft(store, run.run_id, text);
+        assert.equal(unchanged.outcome, "unchanged");
+      }
+      assert.deepEqual(await store.readArtifactRevision(run.artifact_id!, 1), original);
+      assert.equal((await store.listArtifactRevisions(run.artifact_id!)).length, 3);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("7. инструкция в источнике остаётся данными", async () => {
     const previous = globalThis.fetch;
     let fetches = 0;
