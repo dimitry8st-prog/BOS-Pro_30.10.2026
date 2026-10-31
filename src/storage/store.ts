@@ -6,8 +6,9 @@ import type {
 } from "../contract/types.js";
 
 export interface RunStore {
-  readonly kind: "development-file";
+  readonly kind: "development-file" | "postgres";
   readonly durableProduction: false;
+  withRunLock?<T>(runId: string, fn: () => Promise<T>): Promise<T>;
   saveRun(run: RunRecord): Promise<void>;
   readRun(runId: string): Promise<RunRecord | null>;
   listRuns(): Promise<RunRecord[]>;
