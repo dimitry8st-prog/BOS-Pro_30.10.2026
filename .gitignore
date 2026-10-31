@@ -11,3 +11,6 @@ private/
 artifacts/
 exports/
 *.sqlite*
+var/
+*.tmp-*
+

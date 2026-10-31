@@ -1,0 +1,37 @@
+{
+  "schema_version": "0.1.0",
+  "workspace_id": "ws_educational",
+  "project_id": "prj_educational",
+  "operation": "prepare_draft",
+  "mode": "educational",
+  "topic": "Как проверять результат выполнения задачи",
+  "audience": "небольшая команда",
+  "language": "ru",
+  "format": "short_note",
+  "sources": [
+    {
+      "source_id": "src_readme",
+      "url": "https://github.com/dimitry8st-prog/BOS-Pro_30.10.2026/blob/9b46b603d9304e331ab51bf9f7fdecc4bc11ea19/README.md",
+      "title": "README.md BOS.pro (снимок fixture)",
+      "provided_text": "Короткий текст источника для примера валидатора. Это не каталожный fixture.",
+      "provenance": {
+        "kind": "fixture",
+        "fixture_id": "example-not-executed",
+        "note": "Локальный снимок README.md на коммите 9b46b603d9304e331ab51bf9f7fdecc4bc11ea19. Не является живой проверкой URL."
+      }
+    }
+  ],
+  "criteria": {
+    "max_body_chars": 600,
+    "link_policy": "sources_separate",
+    "factual_claims": "each_bound_to_fragment",
+    "forbid_measured_savings_claims": true
+  },
+  "destination": null,
+  "budget": {
+    "amount": "-1",
+    "currency": "RUB",
+    "external_spend_amount": "0"
+  },
+  "idempotency_key": "example-bad-budget001"
+}

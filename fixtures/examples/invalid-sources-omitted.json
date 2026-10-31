@@ -1,0 +1,24 @@
+{
+  "schema_version": "0.1.0",
+  "workspace_id": "ws_educational",
+  "project_id": "prj_educational",
+  "operation": "prepare_draft",
+  "mode": "educational",
+  "topic": "Как проверять результат выполнения задачи",
+  "audience": "небольшая команда",
+  "language": "ru",
+  "format": "short_note",
+  "criteria": {
+    "max_body_chars": 600,
+    "link_policy": "sources_separate",
+    "factual_claims": "each_bound_to_fragment",
+    "forbid_measured_savings_claims": true
+  },
+  "destination": null,
+  "budget": {
+    "amount": "0",
+    "currency": "RUB",
+    "external_spend_amount": "0"
+  },
+  "idempotency_key": "example-no-sources001"
+}

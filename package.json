@@ -1,0 +1,20 @@
+{
+  "name": "bos-pro",
+  "version": "0.0.0",
+  "private": true,
+  "description": "BOS.pro educational scenario contract v0.1. FixtureProvider only. Not a production server.",
+  "type": "module",
+  "engines": {
+    "node": "24.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test dist/test/acceptance.test.js",
+    "scenario:fixture": "tsc -p tsconfig.json && node dist/src/cli.js run --input fixtures/educational-input.json --store var/dev-store"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
