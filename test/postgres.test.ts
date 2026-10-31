@@ -8,6 +8,7 @@ import { Pool } from 'pg';
 import { migratePostgres } from '../src/storage/migrate-postgres.js';
 import { PostgresStore, type SqlClient, type SqlPool } from '../src/storage/postgres-store.js';
 import { executePrepareDraft } from '../src/scenario/execute.js';
+import { recoverInterruptedRuns } from '../src/scenario/recover.js';
 import { reviseDraft } from '../src/scenario/revise.js';
 import type { PrepareDraftInput } from '../src/contract/types.js';
 
@@ -91,16 +92,48 @@ test('PostgreSQL migrations, restricted RLS, transaction rollback, persistence a
       await assert.rejects(()=>c.query("INSERT INTO bos.task VALUES('ws_educational','foreign-project','prj_other')"));
       await c.query('ROLLBACK');
     } finally {c.release();}
+    const refused=await executePrepareDraft({...input,idempotency_key:'refuse-key-01'},{store:alice,root:process.cwd(),providerVariant:'refuse'});
+    assert.equal(refused.outcome,'finished');
+    if(refused.outcome!=='finished') throw new Error('refuse');
+    assert.equal(refused.run.status,'failed');
+    assert.equal(refused.run.stop?.code,'provider_refused');
+    assert.equal(refused.run.journal.some((entry)=>entry.step==='provider'&&entry.error_code==='provider_refused'),true);
+    const cancelled=await executePrepareDraft({...input,idempotency_key:'cancel-key-01'},{store:alice,root:process.cwd(),onStep:async(step,runId)=>{if(step==='before_provider')await alice.requestCancel(runId);}});
+    assert.equal(cancelled.outcome,'finished');
+    if(cancelled.outcome!=='finished') throw new Error('cancel');
+    assert.equal(cancelled.run.status,'cancelled');
+    assert.equal(cancelled.run.stop?.code,'cancelled_by_user');
+    const interrupted=await executePrepareDraft({...input,idempotency_key:'interrupt-key01'},{store:alice,root:process.cwd(),interruptAfter:'running'});
+    assert.equal(interrupted.outcome,'interrupted');
+    const recovered=(await recoverInterruptedRuns(alice)).find((run)=>run.idempotency_key==='interrupt-key01');
+    assert.equal(recovered?.status,'failed');
+    assert.equal(recovered?.stop?.code,'interrupted');
+    assert.equal(recovered?.recovery?.previous_status,'running');
+    assert.equal(recovered?.journal.some((entry)=>entry.step==='recover'),true);
+    const faulty=new PostgresStore(pool,{userId:'alice',workspaceId:'ws_educational',taskId:'task1'});
+    faulty.saveArtifactRevision=async()=>{throw new Error('simulated write failure');};
+    const broken=await executePrepareDraft({...input,idempotency_key:'storage-key-01'},{store:faulty,root:process.cwd()});
+    assert.equal(broken.outcome,'finished');
+    if(broken.outcome!=='finished') throw new Error('storage');
+    assert.equal(broken.run.status,'failed');
+    assert.equal(broken.run.stop?.code,'storage_error');
+    assert.equal(broken.run.artifact_id,null);
+    assert.equal((await query<{n:number}>('SELECT count(*)::int AS n FROM bos.artifact WHERE run_id=$1',[broken.run.run_id])).rows[0]?.n,0);
+    const injected=await executePrepareDraft({...input,idempotency_key:'body-user-01',user_id:'bob'},{store:alice,root:process.cwd()});
+    assert.equal(injected.outcome,'rejected');
+    if(injected.outcome!=='rejected') throw new Error('user');
+    assert.equal(injected.error.code,'unknown_field');
+    assert.equal(injected.error.field,'user_id');
     // A failure after snapshot creation must roll back the entire initial run.
     const bad=new PostgresStore(pool,{userId:'alice',workspaceId:'ws_educational',taskId:'missing'});
     const failed=await executePrepareDraft({...input,idempotency_key:'rollback-key'},{store:bad,root:process.cwd()});
     assert.equal(failed.outcome,'diagnostics_only');
-    assert.equal((await query<{n:number}>('SELECT count(*)::int AS n FROM bos.snapshot')).rows[0]?.n,2);
+    assert.equal((await query<{n:number}>('SELECT count(*)::int AS n FROM bos.snapshot')).rows[0]?.n,6);
     assert.ok((await query('SELECT * FROM bos.audit_event')).rows.length>0);
     if(embedded){await embedded.close(); embedded=new PGlite(dir);}
     if(network){await network.end(); /* persistence also checked by a new connection below */}
-    if(native){const fresh=new Pool({connectionString:native});try{assert.equal((await fresh.query('SELECT * FROM bos.run')).rowCount,2);}finally{await fresh.end();}}
-    else assert.equal((await query('SELECT * FROM bos.run')).rows.length,2);
+    if(native){const fresh=new Pool({connectionString:native});try{assert.equal((await fresh.query('SELECT * FROM bos.run')).rowCount,6);}finally{await fresh.end();}}
+    else assert.equal((await query('SELECT * FROM bos.run')).rows.length,6);
     console.log(native?'Native PostgreSQL transport tested':'Embedded PostgreSQL/PGlite tested; TCP transport not exercised');
   } finally {
     if(embedded) await embedded.close();

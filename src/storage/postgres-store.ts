@@ -74,8 +74,15 @@ export class PostgresStore implements RunStore {
   }
   readSnapshot(id:string){return this.read<InputSnapshot>('snapshot','run_id=$2',[id]);}
   async saveArtifactRevision(a:ArtifactRevision){await this.transaction(async c=>{
-    await c.query('INSERT INTO bos.artifact VALUES($1,$2,$3,$4,$5)',[this.identity.workspaceId,a.artifact_id,a.revision,a.run_id,JSON.stringify(a)]);
-    await c.query('INSERT INTO bos.verification VALUES($1,$2,$3,$4)',[this.identity.workspaceId,a.artifact_id,a.revision,JSON.stringify(a.verification)]);
+    await c.query('SAVEPOINT artifact_write');
+    try {
+      await c.query('INSERT INTO bos.artifact VALUES($1,$2,$3,$4,$5)',[this.identity.workspaceId,a.artifact_id,a.revision,a.run_id,JSON.stringify(a)]);
+      await c.query('INSERT INTO bos.verification VALUES($1,$2,$3,$4)',[this.identity.workspaceId,a.artifact_id,a.revision,JSON.stringify(a.verification)]);
+      await c.query('RELEASE SAVEPOINT artifact_write');
+    } catch (error) {
+      await c.query('ROLLBACK TO SAVEPOINT artifact_write');
+      throw error;
+    }
   });}
   readArtifactRevision(id:string,rev:number){return this.read<ArtifactRevision>('artifact','id=$2 AND revision=$3',[id,rev]);}
   async listArtifactRevisions(id:string):Promise<ArtifactRevision[]> {return this.transaction(async c=>(await c.query<{payload:ArtifactRevision}>('SELECT payload FROM bos.artifact WHERE workspace_id=$1 AND id=$2 ORDER BY revision',[this.identity.workspaceId,id])).rows.map(r=>r.payload));}

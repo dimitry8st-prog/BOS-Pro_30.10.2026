@@ -1,6 +1,12 @@
 CREATE SCHEMA bos;
 REVOKE ALL ON SCHEMA bos FROM PUBLIC;
-CREATE ROLE bos_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS;
+DO $role$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bos_runtime') THEN
+    CREATE ROLE bos_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
+END
+$role$;
 GRANT USAGE ON SCHEMA bos TO bos_runtime;
 CREATE TABLE bos.workspace(id text PRIMARY KEY);
 CREATE TABLE bos.workspace_membership(workspace_id text REFERENCES bos.workspace(id), user_id text NOT NULL, role text NOT NULL CHECK(role IN ('owner','editor','viewer')), PRIMARY KEY(workspace_id,user_id));

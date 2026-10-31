@@ -77,4 +77,12 @@ npm run scenario:fixture
 
 Добавлен серверный адаптер `PostgresStore`, миграции, RLS и интеграционный тест.
 Команды и границы этапа — [POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md).
-Файловый CLI сохраняет прежнее поведение. SQL-проверка: `npm run test:postgres`.
+Файловый CLI сохраняет прежнее поведение. Проверка:
+
+```text
+npm run check
+npm test
+npm run test:postgres
+```
+
+Для локального PostgreSQL `16.10` на отдельном кластере `127.0.0.1:54329` укажите пустую базу и выполните `npm run test:postgres`. Пример: `postgres://postgres@127.0.0.1:54329/bos_pr3_test`. Повтор на уже наполненной базе не запускается: тест не удаляет данные. `FixtureProvider` остаётся, пока не выбраны endpoint и бюджет.
