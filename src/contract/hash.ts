@@ -8,7 +8,7 @@ export function contentHash(text: string): string {
   return `sha256:${sha256Hex(text)}`;
 }
 
-export function newId(prefix: "run" | "art"): string {
+export function newId(prefix: "run" | "art" | "task" | "wfv" | "aud" | "ver" | "stp"): string {
   return `${prefix}_${randomBytes(16).toString("hex")}`;
 }
 

@@ -10,7 +10,7 @@ export type DraftReviewViewModel = {
   fixture: true;
   verificationStatus: VerificationStatus | null;
   publicationStatus: "not_published";
-  accessCheck: "not_performed";
+  accessCheck: "not_performed" | "educational_membership_checked";
 };
 
 export function toDraftReviewViewModel(run: RunRecord, body: string): DraftReviewViewModel {

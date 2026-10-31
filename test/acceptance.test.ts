@@ -94,6 +94,15 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(result.run.costs.model.actual, null);
       assert.equal(result.run.costs.external.actual.amount, "0.00");
       assert.equal(result.run.access_check, "not_performed");
+      assert.match(result.run.task_id, /^task_[a-f0-9]{32}$/);
+      const task = JSON.parse(await readFile(path.join(dir, "tasks", `${result.run.task_id}.json`), "utf8")) as {
+        workspace_id: string;
+        project_id: string;
+        workflow_version_id: string;
+      };
+      assert.equal(task.workspace_id, "ws_educational");
+      assert.equal(task.project_id, "prj_educational");
+      assert.equal(task.workflow_version_id, result.run.workflow_version_id);
 
       const shown = await runNode([cli, "show", "--run", result.run.run_id, "--store", dir]);
       assert.equal(shown.code, 0, shown.stderr);
@@ -337,10 +346,14 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(existsSync(path.join(repoRoot, "pwned-by-source.txt")), false);
       assert.equal(existsSync(path.join(dir, "pwned-by-source.txt")), false);
       const sources = await walkJs(path.join(repoRoot, "dist", "src"));
-      const bundled = (await Promise.all(sources.map(async (file) => readFile(file, "utf8")))).join("\n");
-      assert.equal(bundled.includes("child_process"), false);
-      assert.equal(bundled.includes("createServer"), false);
-      assert.equal(bundled.includes("node:http"), false);
+      const offenders: string[] = [];
+      for (const file of sources) {
+        const text = await readFile(file, "utf8");
+        const clusterStarter = file.endsWith(path.join("db", "cluster.js"));
+        if (text.includes("child_process") && !clusterStarter) offenders.push(file);
+        if (text.includes("createServer") || text.includes("node:http")) offenders.push(file);
+      }
+      assert.deepEqual(offenders, []);
     } finally {
       globalThis.fetch = previous;
       await rm(dir, { recursive: true, force: true });

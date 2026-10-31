@@ -27,5 +27,7 @@ export type { PublicationResult } from "./scenario/publish.js";
 export { recoverInterruptedRuns } from "./scenario/recover.js";
 export { reviseDraft } from "./scenario/revise.js";
 export type { ReviseResult } from "./scenario/revise.js";
+export { EducationalAuthAdapter } from "./auth/educational-auth.js";
 export { DevStore } from "./storage/dev-store.js";
+export { PostgresStore } from "./storage/postgres-store.js";
 export type { RunStore } from "./storage/store.js";

@@ -2,11 +2,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { STORAGE_CLASS } from "./contract/constants.js";
 import type { ProviderVariant } from "./contract/types.js";
+import { assertLocalTestUrl, isLocalActor } from "./db/local-test.js";
 import { executePrepareDraft } from "./scenario/execute.js";
 import { requestPublication } from "./scenario/publish.js";
 import { recoverInterruptedRuns } from "./scenario/recover.js";
 import { reviseDraft } from "./scenario/revise.js";
 import { DevStore } from "./storage/dev-store.js";
+import { PostgresStore } from "./storage/postgres-store.js";
+import type { RunStore } from "./storage/store.js";
 
 const VARIANTS: readonly ProviderVariant[] = [
   "standard",
@@ -29,11 +32,41 @@ async function main(): Promise<void> {
     return;
   }
   const storePath = args.get("store");
+  const databaseUrl = args.get("database-url");
+  if (typeof storePath === "string" && typeof databaseUrl === "string") {
+    emit({ command, storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError("Нужен один источник: --store или --database-url") }, 2);
+    return;
+  }
+  if (typeof databaseUrl === "string") {
+    const actor = args.get("actor");
+    if (typeof actor !== "string" || !isLocalActor(actor)) {
+      emit({ command, storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError("Для PostgreSQL нужен --actor usr_educational или usr_other") }, 2);
+      return;
+    }
+    try {
+      assertLocalTestUrl(databaseUrl, actor);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Недопустимый учебный URL.";
+      emit({ command, storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError(message) }, 2);
+      return;
+    }
+    const store = await PostgresStore.open(actor);
+    try {
+      await dispatch(command, store, args);
+    } finally {
+      await store.close();
+    }
+    return;
+  }
   if (typeof storePath !== "string") {
-    emit({ command, storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError("Нужен --store") }, 2);
+    emit({ command, storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError("Нужен --store или локальный --database-url") }, 2);
     return;
   }
   const store = await DevStore.open(path.resolve(storePath));
+  await dispatch(command, store, args);
+}
+
+async function dispatch(command: string, store: RunStore, args: Args): Promise<void> {
   if (command === "run") {
     await runCommand(store, args);
     return;
@@ -48,38 +81,38 @@ async function main(): Promise<void> {
   }
   if (command === "recover") {
     const recovered = await recoverInterruptedRuns(store);
-    emit({ command: "recover", storage_class: STORAGE_CLASS, durable_production_storage: false, result: recovered }, 0);
+    emit(envelope("recover", { result: recovered }, store.kind), 0);
     return;
   }
   if (command === "revise") {
     await reviseCommand(store, args);
     return;
   }
-  emit({ command: "usage", storage_class: STORAGE_CLASS, durable_production_storage: false, error: usageError() }, 2);
+  emit(envelope("usage", { error: usageError() }, store.kind), 2);
 }
 
-async function runCommand(store: DevStore, args: Args): Promise<void> {
+async function runCommand(store: RunStore, args: Args): Promise<void> {
   const inputPath = args.get("input");
   if (typeof inputPath !== "string") {
-    emit(envelope("run", { error: usageError("Нужен --input") }), 2);
+    emit(envelope("run", { error: usageError("Нужен --input") }, store.kind), 2);
     return;
   }
   const variantArg = args.get("provider");
   const variant: ProviderVariant = typeof variantArg === "string" ? (variantArg as ProviderVariant) : "standard";
   if (!VARIANTS.includes(variant)) {
-    emit(envelope("run", { error: usageError("Неизвестный --provider") }), 2);
+    emit(envelope("run", { error: usageError("Неизвестный --provider") }, store.kind), 2);
     return;
   }
   const interrupt = args.get("interrupt-after");
   if (interrupt !== undefined && interrupt !== "running") {
-    emit(envelope("run", { error: usageError("Поддерживается только --interrupt-after running") }), 2);
+    emit(envelope("run", { error: usageError("Поддерживается только --interrupt-after running") }, store.kind), 2);
     return;
   }
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(path.resolve(inputPath), "utf8")) as unknown;
   } catch {
-    emit(envelope("run", { result: { outcome: "rejected", error: { code: "invalid_shape", message: "Файл входа не является JSON.", field: null }, run: null } }), 1);
+    emit(envelope("run", { result: { outcome: "rejected", error: { code: "invalid_shape", message: "Файл входа не является JSON.", field: null }, run: null } }, store.kind), 1);
     return;
   }
   const result = await executePrepareDraft(raw, {
@@ -89,18 +122,18 @@ async function runCommand(store: DevStore, args: Args): Promise<void> {
     ...(interrupt === "running" ? { interruptAfter: "running" as const } : {}),
   });
   const code = exitCode(result.outcome, result.outcome === "finished" ? result.run.status : null);
-  emit(envelope("run", { result }), code);
+  emit(envelope("run", { result }, store.kind), code);
 }
 
-async function showCommand(store: DevStore, args: Args): Promise<void> {
+async function showCommand(store: RunStore, args: Args): Promise<void> {
   const runId = args.get("run");
   if (typeof runId !== "string") {
-    emit(envelope("show", { error: usageError("Нужен --run") }), 2);
+    emit(envelope("show", { error: usageError("Нужен --run") }, store.kind), 2);
     return;
   }
   const run = await store.readRun(runId);
   if (!run) {
-    emit(envelope("show", { error: { code: "not_found", message: "Запуск не найден в локальном учебном хранилище.", field: "run" } }), 1);
+    emit(envelope("show", { error: { code: "not_found", message: "Запуск не найден в локальном учебном хранилище.", field: "run" } }, store.kind), 1);
     return;
   }
   const artifact =
@@ -117,31 +150,31 @@ async function showCommand(store: DevStore, args: Args): Promise<void> {
         fixture: true,
         storage_class: STORAGE_CLASS,
       },
-    }),
+    }, store.kind),
     0,
   );
 }
 
-async function publishCommand(store: DevStore, args: Args): Promise<void> {
+async function publishCommand(store: RunStore, args: Args): Promise<void> {
   const runId = args.get("run");
   if (typeof runId !== "string") {
-    emit(envelope("publish", { error: usageError("Нужен --run") }), 2);
+    emit(envelope("publish", { error: usageError("Нужен --run") }, store.kind), 2);
     return;
   }
   const result = await requestPublication(store, runId);
-  emit(envelope("publish", { result }), 1);
+  emit(envelope("publish", { result }, store.kind), 1);
 }
 
-async function reviseCommand(store: DevStore, args: Args): Promise<void> {
+async function reviseCommand(store: RunStore, args: Args): Promise<void> {
   const runId = args.get("run");
   const textFile = args.get("text-file");
   if (typeof runId !== "string" || typeof textFile !== "string") {
-    emit(envelope("revise", { error: usageError("Нужны --run и --text-file") }), 2);
+    emit(envelope("revise", { error: usageError("Нужны --run и --text-file") }, store.kind), 2);
     return;
   }
   const text = await readFile(path.resolve(textFile), "utf8");
   const result = await reviseDraft(store, runId, text.replace(/\r\n/g, "\n"));
-  emit(envelope("revise", { result }), result.outcome === "rejected" ? 1 : 0);
+  emit(envelope("revise", { result }, store.kind), result.outcome === "rejected" ? 1 : 0);
 }
 
 function exitCode(outcome: string, status: string | null): number {
@@ -150,11 +183,11 @@ function exitCode(outcome: string, status: string | null): number {
   return 1;
 }
 
-function envelope(command: string, body: Record<string, unknown>): Record<string, unknown> {
-  return { command, storage_class: STORAGE_CLASS, durable_production_storage: false, ...body };
+function envelope(command: string, body: Record<string, unknown>, storageKind: RunStore["kind"]): Record<string, unknown> {
+  return { command, storage_class: STORAGE_CLASS, storage_kind: storageKind, durable_production_storage: false, ...body };
 }
 
-function usageError(message = "Команды: run, show, publish, recover, revise."): { code: string; message: string; field: null } {
+function usageError(message = "Команды: run, show, publish, recover, revise. Хранилище: --store или локальный --database-url вместе с --actor."): { code: string; message: string; field: null } {
   return { code: "usage", message, field: null };
 }
 

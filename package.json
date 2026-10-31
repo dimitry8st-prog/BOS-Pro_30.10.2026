@@ -11,10 +11,17 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "tsc -p tsconfig.json && node --test dist/test/acceptance.test.js",
-    "scenario:fixture": "tsc -p tsconfig.json && node dist/src/cli.js run --input fixtures/educational-input.json --store var/dev-store"
+    "scenario:fixture": "tsc -p tsconfig.json && node dist/src/cli.js run --input fixtures/educational-input.json --store var/dev-store",
+    "db:bootstrap": "tsc -p tsconfig.json && node dist/src/db/bootstrap.js",
+    "test:pg": "tsc -p tsconfig.json && node --test dist/test/postgres-acceptance.test.js",
+    "scenario:postgres": "tsc -p tsconfig.json && node dist/src/cli.js run --input fixtures/educational-input.json --database-url postgres://usr_educational:usr_educational_local_only@127.0.0.1:54329/bos_pro_test --actor usr_educational"
+  },
+  "dependencies": {
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
     "typescript": "7.0.2"
   }
 }

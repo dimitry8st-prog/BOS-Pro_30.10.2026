@@ -139,6 +139,8 @@ export type RunRecord = {
   schema_version: string;
   rules_version: string;
   workflow_version: string;
+  task_id: string;
+  workflow_version_id: string;
   input_hash: string;
   snapshot_ref: string;
   idempotency_key: string;
@@ -166,7 +168,7 @@ export type RunRecord = {
     rls: false;
     production: false;
   };
-  access_check: "not_performed";
+  access_check: "not_performed" | "educational_membership_checked";
   access_check_note: string;
   cancel_requested: boolean;
   lease: { pid: number | null; abandoned: boolean; at: string } | null;

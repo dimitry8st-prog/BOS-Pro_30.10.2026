@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { MESSAGES, STORAGE_CLASS } from "../contract/constants.js";
+import { ACCESS_CHECK_NOTE, EDUCATIONAL_WORKFLOW_VERSION_ID, MESSAGES, STORAGE_CLASS } from "../contract/constants.js";
 import { isTerminal, type ArtifactRevision, type IdempotencyRecord, type InputSnapshot, type RunRecord } from "../contract/types.js";
 import { pidAlive } from "./pid.js";
 import type { RunStore } from "./store.js";
@@ -17,6 +17,8 @@ const MARKER = {
 export class DevStore implements RunStore {
   readonly kind = "development-file" as const;
   readonly durableProduction = false as const;
+  readonly accessCheck = "not_performed" as const;
+  readonly accessCheckNote = ACCESS_CHECK_NOTE;
 
   private constructor(readonly directory: string) {}
 
@@ -30,6 +32,54 @@ export class DevStore implements RunStore {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     return store;
+  }
+
+  async createRun(run: RunRecord, snapshot: InputSnapshot, idempotency: IdempotencyRecord): Promise<void> {
+    assertSafeId(run.task_id, /^task_[a-f0-9]{32}$/);
+    if (run.workflow_version_id !== EDUCATIONAL_WORKFLOW_VERSION_ID) {
+      throw Object.assign(new Error(MESSAGES.storage_error), { code: "storage_error" });
+    }
+    const taskFile = path.join(this.directory, "tasks", `${run.task_id}.json`);
+    await mkdir(path.dirname(taskFile), { recursive: true });
+    await writeFile(
+      taskFile,
+      JSON.stringify(
+        {
+          task_id: run.task_id,
+          workspace_id: run.workspace_id,
+          project_id: run.project_id,
+          workflow_version_id: run.workflow_version_id,
+          topic: snapshot.input.topic,
+          created_at: run.created_at,
+        },
+        null,
+        2,
+      ) + "\n",
+      { encoding: "utf8", flag: "wx" },
+    );
+    const workflowFile = path.join(this.directory, "workflows", `${run.workflow_version_id}.json`);
+    await mkdir(path.dirname(workflowFile), { recursive: true });
+    try {
+      await writeFile(
+        workflowFile,
+        JSON.stringify(
+          {
+            workflow_version_id: run.workflow_version_id,
+            scenario_version: run.scenario_version,
+            rules_version: run.rules_version,
+            immutable: true,
+          },
+          null,
+          2,
+        ) + "\n",
+        { encoding: "utf8", flag: "wx" },
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await this.saveSnapshot(snapshot);
+    await this.saveRun(run);
+    await this.putIdempotency(idempotency);
   }
 
   async saveRun(run: RunRecord): Promise<void> {

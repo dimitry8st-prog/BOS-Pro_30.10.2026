@@ -1,7 +1,7 @@
 import { educationalCosts, verifyDraft } from "../checks/draft-checks.js";
 import { assertCatalogFixtures } from "../contract/catalog.js";
 import {
-  ACCESS_CHECK_NOTE,
+  EDUCATIONAL_WORKFLOW_VERSION_ID,
   MESSAGES,
   RULES_VERSION,
   SCENARIO_VERSION,
@@ -69,7 +69,7 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
         return { outcome: "finished" as const, replay: true, run: prior };
       }
 
-      const run = blankRun(input, inputHash, variant);
+      const run = blankRun(input, inputHash, variant, options.store);
       const snapshot: InputSnapshot = {
         run_id: run.run_id,
         schema_version: SCHEMA_VERSION,
@@ -81,9 +81,7 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
         input,
       };
       try {
-        await options.store.saveSnapshot(snapshot);
-        await options.store.saveRun(run);
-        await options.store.putIdempotency({
+        await options.store.createRun(run, snapshot, {
           scope_hash: scopeHash,
           workspace_id: input.workspace_id,
           operation: "prepare_draft",
@@ -92,7 +90,19 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
           run_id: run.run_id,
           created_at: run.created_at,
         });
-      } catch {
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "membership_denied" || code === "project_not_in_workspace") {
+          return {
+            outcome: "rejected" as const,
+            error: {
+              code,
+              message: MESSAGES[code],
+              field: code === "project_not_in_workspace" ? "project_id" : "workspace_id",
+            },
+            run: null,
+          };
+        }
         return {
           outcome: "diagnostics_only" as const,
           error: { code: "storage_error", message: MESSAGES.storage_error, field: null },
@@ -176,7 +186,6 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
 
       run.artifact_id = artifactId;
       run.current_revision = 1;
-      appendJournal(run, "persist", "ok", null, [`artifacts/${artifactId}/1.json`]);
       return conclude(options.store, run, "succeeded", null);
     });
   } catch (error) {
@@ -188,7 +197,7 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
   }
 }
 
-function blankRun(input: PrepareDraftInput, inputHash: string, variant: string): RunRecord {
+function blankRun(input: PrepareDraftInput, inputHash: string, variant: string, store: RunStore): RunRecord {
   const now = new Date().toISOString();
   const runId = newId("run");
   return {
@@ -203,6 +212,8 @@ function blankRun(input: PrepareDraftInput, inputHash: string, variant: string):
     schema_version: SCHEMA_VERSION,
     rules_version: RULES_VERSION,
     workflow_version: WORKFLOW_VERSION,
+    task_id: newId("task"),
+    workflow_version_id: EDUCATIONAL_WORKFLOW_VERSION_ID,
     input_hash: inputHash,
     snapshot_ref: `snapshots/${runId}.json`,
     idempotency_key: input.idempotency_key,
@@ -226,8 +237,8 @@ function blankRun(input: PrepareDraftInput, inputHash: string, variant: string):
       rls: false,
       production: false,
     },
-    access_check: "not_performed",
-    access_check_note: ACCESS_CHECK_NOTE,
+    access_check: store.accessCheck,
+    access_check_note: store.accessCheckNote,
     cancel_requested: false,
     lease: null,
     recovery: null,
@@ -263,15 +274,47 @@ async function conclude(
   if (status === "succeeded" && run.verification?.status === "pass") run.quality_gate = "open";
   else run.quality_gate = "blocked";
   run.next_user_action = nextUserAction(run);
+  if (status === "succeeded" && run.artifact_id !== null && run.current_revision !== null) {
+    appendJournal(run, "persist", "ok", null, [`artifacts/${run.artifact_id}/${run.current_revision}.json`]);
+  }
   appendJournal(run, "finish", status === "succeeded" ? "ok" : "fail", stop?.code ?? null, run.artifact_id ? [`artifacts/${run.artifact_id}/${run.current_revision}.json`] : []);
   try {
     await store.saveRun(run);
     return { outcome: "finished", replay: false, run };
   } catch {
-    return {
-      outcome: "diagnostics_only",
-      error: { code: stop?.code ?? "storage_error", message: stop?.message ?? MESSAGES.storage_error, field: null },
-      run: null,
-    };
+    if (status !== "succeeded") {
+      return {
+        outcome: "diagnostics_only",
+        error: { code: stop?.code ?? "storage_error", message: stop?.message ?? MESSAGES.storage_error, field: null },
+        run: null,
+      };
+    }
+    while (run.journal.length > 0) {
+      const last = run.journal[run.journal.length - 1];
+      if (last?.step !== "finish" && last?.step !== "persist") break;
+      run.journal.pop();
+    }
+    run.status = "running";
+    assertTransition(run.status, "failed");
+    run.status = "failed";
+    run.stop = { code: "storage_error", message: MESSAGES.storage_error };
+    run.artifact_id = null;
+    run.current_revision = null;
+    run.quality_gate = "blocked";
+    run.lease = null;
+    run.publication = { status: "not_published", handler: "absent", permitted: false };
+    run.next_user_action = nextUserAction(run);
+    appendJournal(run, "persist", "fail", "storage_error");
+    appendJournal(run, "finish", "fail", "storage_error", []);
+    try {
+      await store.saveRun(run);
+      return { outcome: "finished", replay: false, run };
+    } catch {
+      return {
+        outcome: "diagnostics_only",
+        error: { code: "storage_error", message: MESSAGES.storage_error, field: null },
+        run: null,
+      };
+    }
   }
 }

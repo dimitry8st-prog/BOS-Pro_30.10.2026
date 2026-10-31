@@ -47,7 +47,14 @@ export const MESSAGES = {
   artifact_missing: "У запуска нет сохранённой версии результата для правки.",
   revision_unchanged: "Текст совпадает с текущей версией. Новая версия не создана.",
   lock_timeout: "Не удалось дождаться блокировки идемпотентности.",
+  membership_denied: "Пользователь не является участником этого workspace. Учебный адаптер не принимает личность из тела запроса.",
+  project_not_in_workspace: "Проект не принадлежит указанному workspace.",
 } as const;
+
+export const EDUCATIONAL_WORKFLOW_VERSION_ID = "wfv_prepare_draft_educational_0_1";
+
+export const EDUCATIONAL_ACCESS_NOTE =
+  "Личность задана ролью входа PostgreSQL локального теста, а не полем user_id из тела запроса. Membership и RLS проверены этой ролью. Это не аутентификация публичного сервиса.";
 
 export type ErrorCode = keyof typeof MESSAGES;
 

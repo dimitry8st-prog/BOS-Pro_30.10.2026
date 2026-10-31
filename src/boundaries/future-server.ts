@@ -1,9 +1,9 @@
 import { MESSAGES } from "../contract/constants.js";
 
 /**
- * Typed boundary for a future server.
- * Authentication, membership and RLS are not implemented.
- * This class refuses instead of allowing access.
+ * File-store boundary. Calling this class does not authorize access.
+ * The local PostgreSQL path uses EducationalAuthAdapter and is not this stub.
+ * Neither one is authentication for a public service.
  */
 export class MembershipCheckNotImplemented {
   async assertMember(_request: {
