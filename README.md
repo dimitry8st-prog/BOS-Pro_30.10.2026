@@ -75,9 +75,12 @@ npm run scenario:fixture
 
 ## PostgreSQL
 
-Добавлен серверный адаптер `PostgresStore`, миграции, RLS и интеграционный тест.
-Команды и границы этапа — [POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md).
-Файловый CLI сохраняет прежнее поведение. Проверка:
+Серверный адаптер `PostgresStore` хранит запуски в PostgreSQL. Файловый режим
+`npm run scenario:fixture` не требует базы и работает как прежде. Границы этапа —
+[POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md). Контракт будущего серверного доступа —
+[SERVER_ACCESS_CONTRACT_V0_1.md](docs/SERVER_ACCESS_CONTRACT_V0_1.md).
+
+Проверка:
 
 ```text
 npm run check
@@ -85,4 +88,13 @@ npm test
 npm run test:postgres
 ```
 
-Для локального PostgreSQL `16.10` на отдельном кластере `127.0.0.1:54329` укажите пустую базу и выполните `npm run test:postgres`. Пример: `postgres://postgres@127.0.0.1:54329/bos_pr3_test`. Повтор на уже наполненной базе не запускается: тест не удаляет данные. `FixtureProvider` остаётся, пока не выбраны endpoint и бюджет.
+Без `BOS_TEST_DATABASE_URL` последний тест идёт на PGlite. Для обычного PostgreSQL
+укажите административный URL пустой одноразовой базы на `127.0.0.1`. Тест создаёт
+учебные login-роли и подключается ими. Повтор на уже наполненной базе не
+запускается: тест не удаляет данные.
+
+Учебный сценарий в отдельной базе `bos_educational` повторяется командой
+`npm run scenario:postgres`. Пароли задаются только в окружении. База должна быть
+локальной, а переменная `BOS_EDUCATIONAL_DATABASE` равна `1`: в обычную базу
+учебные строки не добавляются. Команды — в [POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md).
+`FixtureProvider` остаётся, пока не выбраны endpoint и бюджет.

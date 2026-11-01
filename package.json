@@ -13,7 +13,8 @@
     "test": "tsc -p tsconfig.json && node --test dist/test/acceptance.test.js",
     "scenario:fixture": "tsc -p tsconfig.json && node dist/src/cli.js run --input fixtures/educational-input.json --store var/dev-store",
     "test:postgres": "tsc -p tsconfig.json && node --test dist/test/postgres.test.js",
-    "migrate:postgres": "tsc -p tsconfig.json && node dist/src/storage/migrate-postgres.js"
+    "migrate:postgres": "tsc -p tsconfig.json && node dist/src/storage/migrate-postgres.js",
+    "scenario:postgres": "tsc -p tsconfig.json && node dist/src/scenario/educational-postgres.js"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.14",

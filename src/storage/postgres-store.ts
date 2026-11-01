@@ -22,7 +22,8 @@ export class PostgresStore implements RunStore {
     const c = await this.pool.connect();
     try {
       await c.query('BEGIN');
-      await c.query("SELECT set_config('bos.user_id',$1,true),set_config('bos.workspace_id',$2,true)", [this.identity.userId,this.identity.workspaceId]);
+      await this.assertRuntimeSession(c);
+      await c.query("SELECT set_config('bos.workspace_id',$1,true)", [this.identity.workspaceId]);
       const access = await c.query<{ allowed: boolean }>('SELECT bos.can_access($1,false) AS allowed',[this.identity.workspaceId]);
       if (!access.rows[0]?.allowed) throw new Error('workspace_access_denied');
       const result = await this.context.run(c,()=>fn(c));
@@ -60,9 +61,11 @@ export class PostgresStore implements RunStore {
     await this.transaction(async c=>{
       const task=await c.query('SELECT 1 FROM bos.task WHERE workspace_id=$1 AND id=$2 AND project_id=$3',[this.identity.workspaceId,this.identity.taskId,run.project_id]);
       if(!task.rows.length) throw new Error('task_project_mismatch');
-      await c.query(`INSERT INTO bos.run VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=jsonb_set(EXCLUDED.payload,'{cancel_requested}',to_jsonb((bos.run.payload->>'cancel_requested')::boolean OR (EXCLUDED.payload->>'cancel_requested')::boolean))`,[run.workspace_id,run.run_id,this.identity.taskId,run.workflow_version,JSON.stringify(run)]);
+      await c.query(`INSERT INTO bos.run VALUES($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,id) DO UPDATE SET payload=jsonb_set(EXCLUDED.payload,'{cancel_requested}',to_jsonb(COALESCE((bos.run.payload->>'cancel_requested')::boolean,false) OR COALESCE((EXCLUDED.payload->>'cancel_requested')::boolean,false)))`,[run.workspace_id,run.run_id,this.identity.taskId,run.workflow_version,JSON.stringify(run)]);
       for(let i=0;i<run.journal.length;i++) {
-        for(const table of ['run_step','audit_event']) await c.query(`INSERT INTO bos.${table} VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[run.workspace_id,run.run_id,i,JSON.stringify(run.journal[i])]);
+        const entry = JSON.stringify(run.journal[i]);
+        await c.query('INSERT INTO bos.run_step VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[run.workspace_id,run.run_id,i,entry]);
+        await c.query("INSERT INTO bos.audit_event VALUES($1,$2,$3,jsonb_set($4::jsonb,'{actor_user_id}',to_jsonb(session_user::text))) ON CONFLICT DO NOTHING",[run.workspace_id,run.run_id,i,entry]);
       }
     });
   }
@@ -92,5 +95,20 @@ export class PostgresStore implements RunStore {
     await this.transaction(async c=>{await c.query('INSERT INTO bos.idempotency VALUES($1,$2,$3,$4)',[this.identity.workspaceId,r.scope_hash,r.run_id,JSON.stringify(r)]);});
   }
   async requestCancel(id:string){await this.transaction(async c=>{await c.query(`UPDATE bos.run SET payload=jsonb_set(payload,'{cancel_requested}','true') WHERE workspace_id=$1 AND id=$2 AND payload->>'status' NOT IN ('succeeded','failed','cancelled')`,[this.identity.workspaceId,id]);});}
+
+  private async assertRuntimeSession(c: SqlClient): Promise<void> {
+    const session = await c.query<{ user_id: string; rolsuper: boolean | string; rolbypassrls: boolean | string; owner: string }>(
+      `SELECT session_user AS user_id, r.rolsuper, r.rolbypassrls, pg_get_userbyid(c.relowner) AS owner
+       FROM pg_roles r
+       JOIN pg_class c ON c.relname = 'run' AND c.relkind = 'r'
+       JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'bos'
+       WHERE r.rolname = session_user`,
+    );
+    const row = session.rows[0];
+    const elevated = (value: boolean | string | undefined) => value === true || value === 't' || value === 'true';
+    if (!row || row.user_id !== this.identity.userId || elevated(row.rolsuper) || elevated(row.rolbypassrls) || row.owner === row.user_id) {
+      throw new Error('runtime_role_rejected');
+    }
+  }
 }
 class RollbackResult extends Error {}
