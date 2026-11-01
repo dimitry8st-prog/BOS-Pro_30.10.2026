@@ -127,8 +127,21 @@ npm run test:postgres  # Native transport + upgrade: 2/2 pass
 - Длинные вызовы модели внутри одной транзакции не поддержаны
 - PR №2 не merge, main/production не менялись
 
+## Дополнительная сверка замечаний (после `d5a80df`)
+
+1. **JSON null** — подтверждено; исправлено миграцией `003_payload_null_guard.sql`
+   (`jsonb_typeof` + `IS TRUE`); регрессии на missing и `"status": null`.
+2. **ALTER ROLE чужих login** — подтверждено; `ensureLogin` и тест больше не
+   делают `ALTER`; при занятой роли без рабочего disposable-пароля — отказ.
+3. **Реальный откат artifact/verification и cancel из другого соединения** —
+   `claimIdempotentStart` + короткие транзакции; регрессия verification-gap через
+   реальный `saveArtifactRevision`; live-cancel через отдельный `PostgresStore`.
+4. **session_user / auth** — ограничение зафиксировано в
+   `SERVER_ACCESS_CONTRACT_V0_1.md` и `POSTGRES_STAGE.md`: один app-user =
+   один DB LOGIN; общий пул с подменой GUC не подходит.
+
 ## Verdict
 
-**PostgreSQL-этап хранения и изоляции — готов к ревью PR №2** после зелёного CI
-итогового SHA. Публичный доступ и серверная сессия — следующий этап
-(`docs/SERVER_ACCESS_CONTRACT_V0_1.md`), не часть этого merge.
+**Замечания 1–3 закрыты кодом и native/PGlite регрессиями.** Приёмка PR №2
+по-прежнему отдельное решение Дмитрия после зелёного CI нового SHA. Публичная
+аутентификация не начата.

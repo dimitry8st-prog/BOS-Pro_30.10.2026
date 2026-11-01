@@ -10,10 +10,17 @@ import type { ArtifactRevision, IdempotencyRecord, InputSnapshot, RunRecord } fr
 
 /** Server-only identity established by authentication; never accept this from model output or a request body. */
 export interface StoreIdentity { userId: string; workspaceId: string; taskId: string }
+
 export class PostgresStore implements RunStore {
   readonly kind = 'postgres' as const;
   readonly durableProduction = false as const;
   private readonly context = new AsyncLocalStorage<SqlClient>();
+  /**
+   * Process-local same-key gate. Short DB transactions stay independent so another
+   * LOGIN connection can UPDATE cancel_requested while a run is active. Unique
+   * idempotency keys still protect cross-process duplicates.
+   */
+  private static readonly localGates = new Map<string, Promise<void>>();
   constructor(private readonly pool: SqlPool, private readonly identity: StoreIdentity) {}
 
   private async transaction<T>(fn: (c: SqlClient) => Promise<T>): Promise<T> {
@@ -30,19 +37,21 @@ export class PostgresStore implements RunStore {
       await c.query('COMMIT'); return result;
     } catch(e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
   }
+
   async withIdempotencyLock<T>(hash: string, fn: ()=>Promise<T>): Promise<T> {
-    let result: T;
+    const key = this.identity.workspaceId + ':' + hash;
+    const previous = PostgresStore.localGates.get(key) ?? Promise.resolve();
+    let unlock!: () => void;
+    const held = new Promise<void>((resolve) => { unlock = resolve; });
+    PostgresStore.localGates.set(key, previous.then(() => held));
+    await previous;
     try {
-      return await this.transaction(async c=>{
-        await c.query("SET LOCAL lock_timeout='5s'");
-        await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[this.identity.workspaceId+':'+hash]);
-        result = await fn();
-        // executePrepareDraft reports persistence failures as a value. Roll back partial writes too.
-        if (typeof result==='object' && result!==null && 'outcome' in result && result.outcome==='diagnostics_only') throw new RollbackResult();
-        return result;
-      });
-    } catch(e) { if(e instanceof RollbackResult) return result!; throw e; }
+      return await fn();
+    } finally {
+      unlock();
+    }
   }
+
   async withRunLock<T>(id:string,fn:()=>Promise<T>):Promise<T> {
     return this.transaction(async c=>{
       await c.query("SET LOCAL lock_timeout='5s'");
@@ -50,6 +59,26 @@ export class PostgresStore implements RunStore {
       return fn();
     });
   }
+
+  /** Atomic first write: snapshot + run + idempotency, or nothing. */
+  async claimIdempotentStart(snapshot: InputSnapshot, run: RunRecord, record: IdempotencyRecord): Promise<void> {
+    if (snapshot.input.workspace_id !== this.identity.workspaceId || run.workspace_id !== this.identity.workspaceId || record.workspace_id !== this.identity.workspaceId) {
+      throw new Error('workspace_mismatch');
+    }
+    await this.transaction(async c => {
+      const task = await c.query('SELECT 1 FROM bos.task WHERE workspace_id=$1 AND id=$2 AND project_id=$3', [this.identity.workspaceId, this.identity.taskId, run.project_id]);
+      if (!task.rows.length) throw new Error('task_project_mismatch');
+      await c.query('INSERT INTO bos.snapshot VALUES($1,$2,$3)', [this.identity.workspaceId, snapshot.run_id, JSON.stringify(snapshot)]);
+      await c.query('INSERT INTO bos.run VALUES($1,$2,$3,$4,$5)', [run.workspace_id, run.run_id, this.identity.taskId, run.workflow_version, JSON.stringify(run)]);
+      await c.query('INSERT INTO bos.idempotency VALUES($1,$2,$3,$4)', [this.identity.workspaceId, record.scope_hash, record.run_id, JSON.stringify(record)]);
+      for (let i = 0; i < run.journal.length; i++) {
+        const entry = JSON.stringify(run.journal[i]);
+        await c.query('INSERT INTO bos.run_step VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [run.workspace_id, run.run_id, i, entry]);
+        await c.query("INSERT INTO bos.audit_event VALUES($1,$2,$3,jsonb_set($4::jsonb,'{actor_user_id}',to_jsonb(session_user::text))) ON CONFLICT DO NOTHING", [run.workspace_id, run.run_id, i, entry]);
+      }
+    });
+  }
+
   private async read<T>(table:string, condition:string, values:unknown[]):Promise<T|null> {
     return this.transaction(async c=>{
       const r=await c.query<{payload:T}>(`SELECT payload FROM bos.${table} WHERE workspace_id=$1 AND ${condition}`,[this.identity.workspaceId,...values]);
@@ -111,4 +140,3 @@ export class PostgresStore implements RunStore {
     }
   }
 }
-class RollbackResult extends Error {}

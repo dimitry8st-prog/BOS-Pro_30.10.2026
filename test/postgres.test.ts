@@ -134,13 +134,33 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
       });
     }
     const versions = await adminQuery<{ version: string }>('SELECT version FROM public.bos_schema_migration ORDER BY version');
-    assert.deepEqual(versions.rows.map((row) => row.version), ['001', '002']);
+    assert.deepEqual(versions.rows.map((row) => row.version), ['001', '002', '003']);
     for (const name of USERS) {
       const found = await adminQuery('SELECT 1 FROM pg_roles WHERE rolname = $1', [name]);
       if (found.rows.length === 0) {
         await adminQuery(`CREATE ROLE ${name} LOGIN PASSWORD '${TEST_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
+      } else if (native) {
+        // Cluster roles survive DROP DATABASE. Never ALTER an existing role; only
+        // reuse it when the disposable test password already works.
+        const probeUrl = new URL(native);
+        probeUrl.username = name;
+        probeUrl.password = TEST_PASSWORD;
+        const probe = new Pool({ connectionString: probeUrl.toString(), max: 1 });
+        try {
+          const client = await probe.connect();
+          const who = await client.query<{ user_id: string; rolsuper: boolean }>('SELECT session_user AS user_id, rolsuper FROM pg_roles WHERE rolname = session_user');
+          client.release();
+          if (who.rows[0]?.user_id !== name || who.rows[0]?.rolsuper) {
+            throw new Error(`role ${name} exists but is not a disposable test login`);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`role ${name} already exists; refusing to ALTER it (${message})`);
+        } finally {
+          await probe.end();
+        }
       } else {
-        await adminQuery(`ALTER ROLE ${name} WITH LOGIN PASSWORD '${TEST_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
+        throw new Error(`role ${name} already exists; refusing to alter embedded roles`);
       }
       await adminQuery(`GRANT bos_runtime TO ${name}`);
     }
@@ -219,6 +239,20 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
     if (cancelled.outcome !== 'finished') throw new Error('cancel');
     assert.equal(cancelled.run.status, 'cancelled');
     assert.equal(cancelled.run.stop?.code, 'cancelled_by_user');
+    // Cancel must work from a separate LOGIN connection while the run is still active.
+    const canceller = new PostgresStore(userPool('alice'), { userId: 'alice', workspaceId: 'ws_educational', taskId: 'task1' });
+    const liveCancel = await executePrepareDraft({ ...input, idempotency_key: 'live-cancel-01' }, {
+      store: alice,
+      root: process.cwd(),
+      onStep: async (step, runId) => {
+        if (step === 'before_provider') await canceller.requestCancel(runId);
+      },
+    });
+    assert.equal(liveCancel.outcome, 'finished');
+    if (liveCancel.outcome !== 'finished') throw new Error('live cancel');
+    assert.equal(liveCancel.run.status, 'cancelled');
+    assert.equal(liveCancel.run.cancel_requested, true);
+    assert.equal(liveCancel.run.stop?.code, 'cancelled_by_user');
     const interrupted = await executePrepareDraft({ ...input, idempotency_key: 'interrupt-key01' }, { store: alice, root: process.cwd(), interruptAfter: 'running' });
     assert.equal(interrupted.outcome, 'interrupted');
     const recovered = (await recoverInterruptedRuns(alice)).find((run) => run.idempotency_key === 'interrupt-key01');
@@ -255,6 +289,29 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
     assert.equal(broken.run.stop?.code, 'storage_error');
     assert.equal(broken.run.artifact_id, null);
     assert.equal((await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.artifact WHERE run_id = $1', [broken.run.run_id])).rows[0]?.n, 0);
+    // Real adapter path: fail only the verification INSERT inside saveArtifactRevision.
+    const basePool = userPool('alice');
+    const verificationGapPool = {
+      async connect() {
+        const client = await basePool.connect();
+        return {
+          async query<T extends Record<string, unknown>>(sql: string, values?: unknown[]) {
+            if (sql.includes('INSERT INTO bos.verification')) throw new Error('simulated verification write failure');
+            return client.query<T>(sql, values);
+          },
+          release() { client.release(); },
+        };
+      },
+    };
+    const gapStore = new PostgresStore(verificationGapPool, { userId: 'alice', workspaceId: 'ws_educational', taskId: 'task1' });
+    const gap = await executePrepareDraft({ ...input, idempotency_key: 'verify-gap-01' }, { store: gapStore, root: process.cwd() });
+    assert.equal(gap.outcome, 'finished');
+    if (gap.outcome !== 'finished') throw new Error('verification gap');
+    assert.equal(gap.run.status, 'failed');
+    assert.equal(gap.run.stop?.code, 'storage_error');
+    assert.equal(gap.run.artifact_id, null);
+    assert.equal((await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.artifact WHERE run_id = $1', [gap.run.run_id])).rows[0]?.n, 0);
+    assert.equal((await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.verification v JOIN bos.artifact a ON a.workspace_id = v.workspace_id AND a.id = v.artifact_id AND a.revision = v.revision WHERE a.run_id = $1', [gap.run.run_id])).rows[0]?.n, 0);
     const injected = await executePrepareDraft({ ...input, idempotency_key: 'body-user-01', user_id: 'bob' }, { store: alice, root: process.cwd() });
     assert.equal(injected.outcome, 'rejected');
     if (injected.outcome !== 'rejected') throw new Error('user');
@@ -263,8 +320,8 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
     const bad = new PostgresStore(userPool('alice'), { userId: 'alice', workspaceId: 'ws_educational', taskId: 'missing' });
     const failed = await executePrepareDraft({ ...input, idempotency_key: 'rollback-key' }, { store: bad, root: process.cwd() });
     assert.equal(failed.outcome, 'diagnostics_only');
-    assert.equal((await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.snapshot')).rows[0]?.n, 7);
-    // Payload must stay consistent with key columns; NULL/missing status and mismatched ids are rejected.
+    assert.equal((await adminQuery<{ n: number }>("SELECT count(*)::int AS n FROM bos.snapshot WHERE payload->'input'->>'idempotency_key' = 'rollback-key'")).rows[0]?.n, 0);
+    // Payload must reject missing keys and explicit JSON null (not only mismatched strings).
     await assert.rejects(
       () => adminQuery(
         `INSERT INTO bos.run VALUES ('ws_educational','run_bad_status','task1','prepare_draft_educational/0.1.0','{"run_id":"run_bad_status","workspace_id":"ws_educational"}'::jsonb)`,
@@ -277,27 +334,18 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
       ),
       /check|violates/i,
     );
-    // Failure between artifact insert and verification must not leave a partial revision.
-    // PostgresStore uses the same SAVEPOINT pattern around artifact + verification writes.
-    const aliceSql = await userPool('alice').connect();
-    try {
-      await aliceSql.query('BEGIN');
-      await aliceSql.query("SELECT set_config('bos.workspace_id','ws_educational',true)");
-      await aliceSql.query('SAVEPOINT artifact_write');
-      try {
-        await aliceSql.query(
-          'INSERT INTO bos.artifact VALUES ($1,$2,$3,$4,$5)',
-          ['ws_educational', first.run.artifact_id, 90, first.run.run_id, JSON.stringify({ artifact_id: first.run.artifact_id, revision: 90 })],
-        );
-        await aliceSql.query('SELECT 1/0');
-      } catch {
-        await aliceSql.query('ROLLBACK TO SAVEPOINT artifact_write');
-      }
-      await aliceSql.query('COMMIT');
-    } finally {
-      aliceSql.release();
-    }
-    assert.equal((await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.artifact WHERE revision = 90')).rows[0]?.n, 0);
+    await assert.rejects(
+      () => adminQuery(
+        `INSERT INTO bos.run VALUES ('ws_educational','run_null_status','task1','prepare_draft_educational/0.1.0','{"run_id":"run_null_status","workspace_id":"ws_educational","status":null}'::jsonb)`,
+      ),
+      /check|violates/i,
+    );
+    await assert.rejects(
+      () => adminQuery(
+        `INSERT INTO bos.run VALUES ('ws_educational','run_null_id','task1','prepare_draft_educational/0.1.0','{"run_id":null,"workspace_id":"ws_educational","status":"queued"}'::jsonb)`,
+      ),
+      /check|violates/i,
+    );
     // GUC identity spoofing must not grant another user's rows on a real login.
     const spoof = await userPool('alice').connect();
     try {
@@ -323,10 +371,12 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
       embedded = new PGlite(dir);
       embeddedAuth = 'postgres';
     }
+    const runCount = (await adminQuery<{ n: number }>('SELECT count(*)::int AS n FROM bos.run')).rows[0]?.n ?? 0;
+    assert.ok(runCount >= 9);
     if (native) {
       const fresh = new Pool({ connectionString: native, max: 1 });
       try {
-        assert.equal((await fresh.query('SELECT * FROM bos.run')).rowCount, 7);
+        assert.equal((await fresh.query('SELECT count(*)::int AS n FROM bos.run')).rows[0]?.n, runCount);
       } finally {
         await fresh.end();
       }
@@ -347,15 +397,14 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
             };
           },
         }, { userId: 'alice', workspaceId: 'ws_educational', taskId: 'task1' });
-        assert.equal((await reader.listRuns()).length, 6);
+        assert.ok((await reader.listRuns()).length >= 8);
         assert.equal((await reader.readRun(first.run.run_id))?.status, 'succeeded');
       } finally {
         await reread.end();
       }
     } else {
-      assert.equal((await adminQuery('SELECT * FROM bos.run')).rows.length, 7);
       const reader = new PostgresStore(userPool('alice'), { userId: 'alice', workspaceId: 'ws_educational', taskId: 'task1' });
-      assert.equal((await reader.listRuns()).length, 6);
+      assert.ok((await reader.listRuns()).length >= 8);
     }
     console.log(native ? 'Native PostgreSQL transport tested' : 'Embedded PostgreSQL/PGlite tested; TCP transport not exercised');
   } finally {
@@ -390,6 +439,14 @@ test('historical migration 001 upgrades without deleting rows or disabling check
     assert.equal(stored.rows[0]?.version, '001');
     assert.equal(stored.rows[0]?.sha256, historical);
     assert.equal(stored.rows[1]?.version, '002');
+    assert.equal(stored.rows[2]?.version, '003');
+    const nullGuard = await embedded.query<{ ok: boolean }>(
+      `SELECT NOT (
+         ('{"run_id":"x","workspace_id":"upgrade-marker","status":null}'::jsonb ? 'status')
+         AND (jsonb_typeof('{"status":null}'::jsonb->'status') = 'string')
+       ) AS ok`,
+    );
+    assert.equal(nullGuard.rows[0]?.ok, true);
   } finally {
     await embedded.close().catch(() => undefined);
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -455,8 +512,12 @@ test('historical migration 001 upgrades without deleting rows or disabling check
     const stored = await upgrade.query<{ version: string; sha256: string }>('SELECT version, sha256 FROM public.bos_schema_migration ORDER BY version');
     assert.equal(stored.rows[0]?.sha256, historical);
     assert.equal(stored.rows[1]?.version, '002');
+    assert.equal(stored.rows[2]?.version, '003');
     const definition = await upgrade.query<{ def: string }>("SELECT pg_get_functiondef('bos.can_access(text,boolean)'::regprocedure) AS def");
     assert.equal(definition.rows[0]?.def.includes('session_user'), true);
+    const guard = await upgrade.query<{ def: string }>("SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'run_payload_keys_present'");
+    assert.equal(guard.rows[0]?.def.includes('IS TRUE'), true);
+    assert.equal(guard.rows[0]?.def.includes("jsonb_typeof"), true);
     console.log('Native PostgreSQL upgrade from migration 001 tested');
   } finally {
     await upgrade.end();

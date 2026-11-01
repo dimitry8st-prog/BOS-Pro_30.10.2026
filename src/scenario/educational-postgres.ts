@@ -32,13 +32,13 @@ function runtimePassword(url: URL): string {
   return password;
 }
 
+/** Create a disposable LOGIN. Never ALTER an existing cluster role or reset its password. */
 async function ensureLogin(admin: Pool, name: 'alice' | 'bob', password: string): Promise<void> {
   const found = await admin.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [name]);
-  if ((found.rowCount ?? 0) === 0) {
-    await admin.query(`CREATE ROLE ${name} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
-  } else {
-    await admin.query(`ALTER ROLE ${name} WITH LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
+  if ((found.rowCount ?? 0) > 0) {
+    throw new Error(`role ${name} already exists; refusing to alter cluster roles — use a disposable database/cluster or create dedicated educational roles`);
   }
+  await admin.query(`CREATE ROLE ${name} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
   await admin.query(`GRANT bos_runtime TO ${name}`);
 }
 
