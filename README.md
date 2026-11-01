@@ -72,3 +72,29 @@ npm run scenario:fixture
 и не меняет её статус. Исходная версия и её отчёт сохраняются.
 Это ограничение учебного сценария: автоматическая повторная проверка фактов пока
 не реализована, поэтому ручная правка сама по себе не получает `pass`.
+
+## PostgreSQL
+
+Серверный адаптер `PostgresStore` хранит запуски в PostgreSQL. Файловый режим
+`npm run scenario:fixture` не требует базы и работает как прежде. Границы этапа —
+[POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md). Контракт будущего серверного доступа —
+[SERVER_ACCESS_CONTRACT_V0_1.md](docs/SERVER_ACCESS_CONTRACT_V0_1.md).
+
+Проверка:
+
+```text
+npm run check
+npm test
+npm run test:postgres
+```
+
+Без `BOS_TEST_DATABASE_URL` последний тест идёт на PGlite. Для обычного PostgreSQL
+укажите административный URL пустой одноразовой базы на `127.0.0.1`. Тест создаёт
+учебные login-роли и подключается ими. Повтор на уже наполненной базе не
+запускается: тест не удаляет данные.
+
+Учебный сценарий в отдельной базе `bos_educational` повторяется командой
+`npm run scenario:postgres`. Пароли задаются только в окружении. База должна быть
+локальной, а переменная `BOS_EDUCATIONAL_DATABASE` равна `1`: в обычную базу
+учебные строки не добавляются. Команды — в [POSTGRES_STAGE.md](docs/POSTGRES_STAGE.md).
+`FixtureProvider` остаётся, пока не выбраны endpoint и бюджет.

@@ -11,6 +11,11 @@ export type ReviseResult =
   | { outcome: "rejected"; error: ErrorBody };
 
 export async function reviseDraft(store: RunStore, runId: string, newText: string): Promise<ReviseResult> {
+  if (store.withRunLock) return store.withRunLock(runId, () => reviseWithinLock(store, runId, newText));
+  return reviseWithinLock(store, runId, newText);
+}
+
+async function reviseWithinLock(store: RunStore, runId: string, newText: string): Promise<ReviseResult> {
   const run = await store.readRun(runId);
   if (!run || run.status !== "succeeded" || !run.artifact_id || run.current_revision === null) {
     return { outcome: "rejected", error: { code: "artifact_missing", message: MESSAGES.artifact_missing, field: null } };
