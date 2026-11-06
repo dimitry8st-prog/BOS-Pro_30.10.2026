@@ -32,3 +32,7 @@ export type { RunStore } from "./storage/store.js";
 
 export { PostgresStore } from './storage/postgres-store.js';
 export type { StoreIdentity } from './storage/postgres-store.js';
+export { LocalSessions } from './server/local-sessions.js';
+export type { SessionIdentity } from './server/local-sessions.js';
+export { LocalTaskApi } from './server/local-task-api.js';
+export type { LocalApiResponse } from './server/local-task-api.js';

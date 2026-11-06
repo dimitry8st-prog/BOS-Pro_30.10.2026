@@ -13,12 +13,13 @@ import { ensureRuntimeLogin } from '../src/storage/ensure-runtime-login.js';
 import { applyMigrations, migrationChecksums, type MigrationDb } from '../src/storage/migrate-postgres.js';
 import { migratePostgres } from '../src/storage/migrate-postgres.js';
 import { PostgresStore, type SqlPool } from '../src/storage/postgres-store.js';
+import { verifyLocalApi } from './server-api-cases.js';
 
 /** Disposable password for test login roles. Already used by CI. Not a service secret. */
 const TEST_PASSWORD = 'bos_disposable_test_only';
-const USERS = ['alice', 'bob', 'viewer'] as const;
+const USERS = ['alice', 'bob', 'viewer', 'editor'] as const;
 
-test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', async () => {
+test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', async t => {
   const native = process.env.BOS_TEST_DATABASE_URL;
   const dir = await mkdtemp(path.join(tmpdir(), 'bos-pg-'));
   let embedded: PGlite | null = native ? null : new PGlite(dir);
@@ -378,6 +379,11 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
       assert.equal(row.body.includes(TEST_PASSWORD), false);
       assert.equal(row.body.includes('provided_text'), false);
     }
+    await adminQuery("INSERT INTO bos.project VALUES ('ws_educational','prj_api')");
+    await adminQuery("INSERT INTO bos.workspace_membership VALUES ('ws_educational','editor','editor')");
+    await t.test('local API: trusted sessions, four operations, denied access and safe responses', async () => {
+      await verifyLocalApi(userPool, input);
+    });
     if (embedded) {
       await embedded.close();
       embedded = new PGlite(dir);

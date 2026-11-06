@@ -23,6 +23,42 @@ export class PostgresStore implements RunStore {
   private static readonly localGates = new Map<string, Promise<void>>();
   constructor(private readonly pool: SqlPool, private readonly identity: StoreIdentity) {}
 
+  /** Server API preflight; executePrepareDraft intentionally normalizes storage errors. */
+  async assertAccess(writing: boolean): Promise<void> {
+    await this.transaction(async c => {
+      const access = await c.query<{ allowed: boolean }>('SELECT bos.can_access($1,$2) AS allowed', [this.identity.workspaceId, writing]);
+      if (!access.rows[0]?.allowed) throw new Error('workspace_access_denied');
+    });
+  }
+
+  async createTask(projectId: string): Promise<{ replay: boolean }> {
+    return this.transaction(async c => {
+      const access = await c.query<{ allowed: boolean }>('SELECT bos.can_access($1,true) AS allowed', [this.identity.workspaceId]);
+      if (!access.rows[0]?.allowed) throw new Error('workspace_access_denied');
+      const project = await c.query('SELECT 1 FROM bos.project WHERE workspace_id=$1 AND id=$2', [this.identity.workspaceId, projectId]);
+      if (!project.rows.length) throw new Error('resource_not_found');
+      const inserted = await c.query('INSERT INTO bos.task(workspace_id,id,project_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [this.identity.workspaceId, this.identity.taskId, projectId]);
+      const task = await c.query<{ project_id: string }>('SELECT project_id FROM bos.task WHERE workspace_id=$1 AND id=$2', [this.identity.workspaceId, this.identity.taskId]);
+      if (task.rows[0]?.project_id !== projectId) throw new Error('task_conflict');
+      return { replay: inserted.rowCount === 0 };
+    });
+  }
+
+  async taskProject(): Promise<string | null> {
+    return this.transaction(async c => {
+      const task = await c.query<{ project_id: string }>('SELECT project_id FROM bos.task WHERE workspace_id=$1 AND id=$2', [this.identity.workspaceId, this.identity.taskId]);
+      return task.rows[0]?.project_id ?? null;
+    });
+  }
+
+  /** Resolve the persisted task, never a task identity supplied alongside a run. */
+  async taskForRun(runId: string): Promise<string | null> {
+    return this.transaction(async c => {
+      const run = await c.query<{ task_id: string }>('SELECT task_id FROM bos.run WHERE workspace_id=$1 AND id=$2', [this.identity.workspaceId, runId]);
+      return run.rows[0]?.task_id ?? null;
+    });
+  }
+
   private async transaction<T>(fn: (c: SqlClient) => Promise<T>): Promise<T> {
     const active = this.context.getStore();
     if (active) return fn(active);
