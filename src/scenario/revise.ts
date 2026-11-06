@@ -7,7 +7,7 @@ import { appendJournal, nextUserAction } from "./journal.js";
 
 export type ReviseResult =
   | { outcome: "revised"; run: RunRecord; revision: ArtifactRevision; previous: ArtifactRevision }
-  | { outcome: "unchanged"; revision: ArtifactRevision }
+  | { outcome: "unchanged"; run: RunRecord; revision: ArtifactRevision }
   | { outcome: "rejected"; error: ErrorBody };
 
 export async function reviseDraft(store: RunStore, runId: string, newText: string): Promise<ReviseResult> {
@@ -26,7 +26,7 @@ async function reviseWithinLock(store: RunStore, runId: string, newText: string)
     return { outcome: "rejected", error: { code: "artifact_missing", message: MESSAGES.artifact_missing, field: null } };
   }
   const hash = contentHash(newText);
-  if (hash === current.content_hash) return { outcome: "unchanged", revision: current };
+  if (hash === current.content_hash) return { outcome: "unchanged", run, revision: current };
 
   const draft: ProviderDraft = {
     ok: true,
