@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
 import type { PrepareDraftInput } from '../contract/types.js';
+import { ensureRuntimeLogin } from '../storage/ensure-runtime-login.js';
 import { applyMigrations } from '../storage/migrate-postgres.js';
 import { PostgresStore, type SqlPool } from '../storage/postgres-store.js';
 import { executePrepareDraft } from './execute.js';
@@ -30,16 +31,6 @@ function runtimePassword(url: URL): string {
     throw new Error('runtime password must be 12-128 characters from letters, digits, underscore and hyphen');
   }
   return password;
-}
-
-/** Create a disposable LOGIN. Never ALTER an existing cluster role or reset its password. */
-async function ensureLogin(admin: Pool, name: 'alice' | 'bob', password: string): Promise<void> {
-  const found = await admin.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [name]);
-  if ((found.rowCount ?? 0) > 0) {
-    throw new Error(`role ${name} already exists; refusing to alter cluster roles — use a disposable database/cluster or create dedicated educational roles`);
-  }
-  await admin.query(`CREATE ROLE ${name} LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
-  await admin.query(`GRANT bos_runtime TO ${name}`);
 }
 
 function safeMessage(error: unknown, secrets: string[]): string {
@@ -87,8 +78,12 @@ async function main(): Promise<void> {
     } finally {
       client.release();
     }
-    await ensureLogin(admin, 'alice', alicePassword);
-    await ensureLogin(admin, 'bob', bobPassword);
+    const aliceLogin = await ensureRuntimeLogin(admin, 'alice', alicePassword, aliceUrl.toString());
+    const bobLogin = await ensureRuntimeLogin(admin, 'bob', bobPassword, bobUrl.toString());
+    // Second call must reuse without ALTER so a repeated npm run can replay the same key.
+    if ((await ensureRuntimeLogin(admin, 'alice', alicePassword, aliceUrl.toString())) !== 'reused') {
+      throw new Error('alice login was not reusable without ALTER');
+    }
     await admin.query("INSERT INTO bos.workspace VALUES ('ws_educational') ON CONFLICT DO NOTHING");
     await admin.query("INSERT INTO bos.workspace VALUES ('ws_other') ON CONFLICT DO NOTHING");
     await admin.query("INSERT INTO bos.workspace_membership VALUES ('ws_educational','alice','owner') ON CONFLICT DO NOTHING");
@@ -102,6 +97,10 @@ async function main(): Promise<void> {
     const store = new PostgresStore(asSqlPool(alice), identity);
     const result = await executePrepareDraft(input, { store, root: process.cwd() });
     if (result.outcome !== 'finished') throw new Error(`scenario outcome ${result.outcome}`);
+    const replayed = await executePrepareDraft(input, { store, root: process.cwd() });
+    if (replayed.outcome !== 'finished' || !replayed.replay || replayed.run.run_id !== result.run.run_id) {
+      throw new Error('same idempotency key did not return the same run');
+    }
 
     const reader = new PostgresStore(asSqlPool(aliceAgain), identity);
     const loaded = await reader.readRun(result.run.run_id);
@@ -128,6 +127,9 @@ async function main(): Promise<void> {
       verification: artifact.verification.status,
       content_hash: artifact.content_hash,
       replay: result.replay,
+      same_key_replay: true,
+      alice_login: aliceLogin,
+      bob_login: bobLogin,
       other_user_can_read: false,
       denial,
     }));

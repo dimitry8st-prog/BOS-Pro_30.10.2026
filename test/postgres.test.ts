@@ -9,6 +9,7 @@ import type { PrepareDraftInput } from '../src/contract/types.js';
 import { executePrepareDraft } from '../src/scenario/execute.js';
 import { recoverInterruptedRuns } from '../src/scenario/recover.js';
 import { reviseDraft } from '../src/scenario/revise.js';
+import { ensureRuntimeLogin } from '../src/storage/ensure-runtime-login.js';
 import { applyMigrations, migrationChecksums, type MigrationDb } from '../src/storage/migrate-postgres.js';
 import { migratePostgres } from '../src/storage/migrate-postgres.js';
 import { PostgresStore, type SqlPool } from '../src/storage/postgres-store.js';
@@ -163,6 +164,17 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
         throw new Error(`role ${name} already exists; refusing to alter embedded roles`);
       }
       await adminQuery(`GRANT bos_runtime TO ${name}`);
+    }
+    if (native && admin) {
+      // Educational CLI must reuse existing LOGIN without ALTER so a repeated
+      // scenario:postgres can return the same run for the same key.
+      assert.equal(await ensureRuntimeLogin(admin, 'alice', TEST_PASSWORD, native), 'reused');
+      assert.equal(await ensureRuntimeLogin(admin, 'bob', TEST_PASSWORD, native), 'reused');
+      assert.equal(await ensureRuntimeLogin(admin, 'viewer', TEST_PASSWORD, native), 'reused');
+      await assert.rejects(
+        () => ensureRuntimeLogin(admin, 'alice', 'wrong_password_xx', native),
+        /refusing to ALTER/,
+      );
     }
     await adminQuery("INSERT INTO bos.workspace VALUES ('ws_educational'),('ws_other')");
     await adminQuery("INSERT INTO bos.workspace_membership VALUES ('ws_educational','alice','owner'),('ws_other','bob','owner'),('ws_educational','viewer','viewer')");
