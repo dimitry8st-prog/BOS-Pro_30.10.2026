@@ -6,8 +6,9 @@ import type {
 } from "../contract/types.js";
 
 export interface RunStore {
-  readonly kind: "development-file";
+  readonly kind: "development-file" | "postgres";
   readonly durableProduction: false;
+  withRunLock?<T>(runId: string, fn: () => Promise<T>): Promise<T>;
   saveRun(run: RunRecord): Promise<void>;
   readRun(runId: string): Promise<RunRecord | null>;
   listRuns(): Promise<RunRecord[]>;
@@ -18,6 +19,8 @@ export interface RunStore {
   listArtifactRevisions(artifactId: string): Promise<ArtifactRevision[]>;
   getIdempotency(scopeHash: string): Promise<IdempotencyRecord | null>;
   putIdempotency(record: IdempotencyRecord): Promise<void>;
+  /** Optional atomic first write used by PostgreSQL to keep claim rollbackable. */
+  claimIdempotentStart?(snapshot: InputSnapshot, run: RunRecord, record: IdempotencyRecord): Promise<void>;
   withIdempotencyLock<T>(scopeHash: string, fn: () => Promise<T>): Promise<T>;
   requestCancel(runId: string): Promise<void>;
 }

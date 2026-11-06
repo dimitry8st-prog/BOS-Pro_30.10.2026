@@ -3,10 +3,11 @@ import { assertTransition } from "../contract/transitions.js";
 import type { RunRecord } from "../contract/types.js";
 import { releaseDeadLocks, type DevStore } from "../storage/dev-store.js";
 import { pidAlive } from "../storage/pid.js";
+import type { RunStore } from "../storage/store.js";
 import { appendJournal, nextUserAction } from "./journal.js";
 
-export async function recoverInterruptedRuns(store: DevStore): Promise<RunRecord[]> {
-  await releaseDeadLocks(store.directory);
+export async function recoverInterruptedRuns(store: RunStore): Promise<RunRecord[]> {
+  if (store.kind === "development-file") await releaseDeadLocks((store as DevStore).directory);
   const recovered: RunRecord[] = [];
   for (const run of await store.listRuns()) {
     if (run.status !== "running" && run.status !== "queued") continue;

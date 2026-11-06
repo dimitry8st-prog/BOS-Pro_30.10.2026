@@ -29,3 +29,6 @@ export { reviseDraft } from "./scenario/revise.js";
 export type { ReviseResult } from "./scenario/revise.js";
 export { DevStore } from "./storage/dev-store.js";
 export type { RunStore } from "./storage/store.js";
+
+export { PostgresStore } from './storage/postgres-store.js';
+export type { StoreIdentity } from './storage/postgres-store.js';

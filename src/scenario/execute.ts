@@ -80,18 +80,23 @@ export async function executePrepareDraft(raw: unknown, options: ExecuteOptions)
         fixture: true,
         input,
       };
+      const idempotency = {
+        scope_hash: scopeHash,
+        workspace_id: input.workspace_id,
+        operation: "prepare_draft" as const,
+        idempotency_key: input.idempotency_key,
+        input_hash: inputHash,
+        run_id: run.run_id,
+        created_at: run.created_at,
+      };
       try {
-        await options.store.saveSnapshot(snapshot);
-        await options.store.saveRun(run);
-        await options.store.putIdempotency({
-          scope_hash: scopeHash,
-          workspace_id: input.workspace_id,
-          operation: "prepare_draft",
-          idempotency_key: input.idempotency_key,
-          input_hash: inputHash,
-          run_id: run.run_id,
-          created_at: run.created_at,
-        });
+        if (options.store.claimIdempotentStart) {
+          await options.store.claimIdempotentStart(snapshot, run, idempotency);
+        } else {
+          await options.store.saveSnapshot(snapshot);
+          await options.store.saveRun(run);
+          await options.store.putIdempotency(idempotency);
+        }
       } catch {
         return {
           outcome: "diagnostics_only" as const,
