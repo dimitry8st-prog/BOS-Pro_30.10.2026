@@ -101,8 +101,10 @@ npm run scenario:postgres
 Административный URL применяет миграции и создаёт учебные workspace, membership,
 проект и task. Сценарий выполняется login-ролью `alice`. Новое подключение `alice`
 читает сохранённые черновик и отчёт. Login `bob` получает отказ на чужой
-результат. Повтор команды возвращает тот же запуск. Очистка этой базы допустима
-только как одноразовой учебной среды и этой командой не выполняется.
+результат. Повтор команды на той же базе переиспользует LOGIN `alice`/`bob`, если
+их пароли из окружения уже работают, без `ALTER ROLE`, и возвращает тот же запуск.
+Если роль занята чужим паролем, сценарий останавливается. Очистка этой базы
+допустима только как одноразовой учебной среды и этой командой не выполняется.
 
 Начальный учебный запуск сохраняется одной транзакцией: snapshot, run, журнал,
 идемпотентность, артефакт и verification. Ошибка сохранения откатывает начальные
@@ -142,26 +144,29 @@ GitHub Actions поднимает отдельный PostgreSQL 16 и выпол
 Результат CI для итогового commit нужно смотреть отдельно. Локальный прогон его
 не заменяет.
 
-Локальная проверка аудита 2026-11-01: `npm run check` — pass; `npm test` —
-11/11 pass; `npm run test:postgres` без URL — PGlite 2/2 pass
-(`Embedded PostgreSQL/PGlite tested; TCP transport not exercised`).
-Нативный PostgreSQL 16 в одноразовом Docker на `127.0.0.1:55432`, чистая база
-`bos_audit_run3`, административный URL только для миграции и seed; прикладные
-операции — LOGIN `alice`/`bob`/`viewer`:
+Проверка 2026-11-06 на ветке `postgres-storage` (поверх аудита 2026-11-01):
+`npm run check` — pass; `npm test` — 11/11 pass; `npm run test:postgres` без URL —
+PGlite 2/2 pass (`Embedded PostgreSQL/PGlite tested; TCP transport not exercised`).
+Нативный PostgreSQL 16 в одноразовом Docker на `127.0.0.1:55433`, чистая база
+`bos_audit_run5`; прикладные операции — LOGIN `alice`/`bob`/`viewer`:
 
 ```text
-$env:BOS_TEST_DATABASE_URL = "postgres://postgres:<password>@127.0.0.1:55432/bos_audit_run3"
+$env:BOS_TEST_DATABASE_URL = "postgres://postgres:<password>@127.0.0.1:55433/bos_audit_run5"
 npm run test:postgres
 ```
 
 Результат: `Native PostgreSQL transport tested` и
 `Native PostgreSQL upgrade from migration 001 tested`, pass 2, fail 0.
-Повтор на той же базе не запускался: тест наполняет её и не очищает данные.
-Отчёт аудита: [POSTGRES_AUDIT_2026-11-01.md](POSTGRES_AUDIT_2026-11-01.md).
+Учебный `npm run scenario:postgres` на отдельном кластере (`bos_educational`)
+прошёл; повтор команды на той же базе вернул тот же `run_id` (`replay=true`) после
+исправления переиспользования LOGIN без `ALTER`. Подробности:
+[POSTGRES_VERIFY_2026-11-06.md](POSTGRES_VERIFY_2026-11-06.md). Предыдущий аудит:
+[POSTGRES_AUDIT_2026-11-01.md](POSTGRES_AUDIT_2026-11-01.md).
 Node — локальный; в `package.json` и CI закреплена `24.12.0`.
 
 Не реализованы: публичная аутентификация, серверный API/UI, деплой, перенос прежних
 данных, реальная модель и публикации. Новая БД не делает учебный генератор production.
+`main` этих изменений ещё не содержит — только PR №2.
 
 Источники технических правил:
 - https://www.postgresql.org/docs/17/ddl-rowsecurity.html
