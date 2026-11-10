@@ -55,6 +55,21 @@ async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "bos-dev-"));
 }
 
+/** Windows may briefly lock store files; retry cleanup so parallel suites stay stable. */
+async function removeTemp(dir: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOTEMPTY" && code !== "EBUSY" && code !== "EPERM") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  await rm(dir, { recursive: true, force: true });
+}
+
 async function readJson(file: string): Promise<unknown> {
   return JSON.parse(await readFile(path.join(repoRoot, file), "utf8")) as unknown;
 }
@@ -114,7 +129,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(again?.run_id, result.run.run_id);
       assert.ok(toDraftReviewViewModel(result.run, body.artifact.text).fixture);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -157,7 +172,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.ok(snapshot);
       assert.equal(snapshot.input.sources.length, 0);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -194,7 +209,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(conflictBody.existing_run_id, left.run.run_id);
       assert.equal(await countRuns(dir), 1);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -233,7 +248,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(persisted.includes("SECRET_DISK"), false);
       assert.match(persisted, /storage_error/);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -274,7 +289,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(separate?.pass, false);
       assert.equal(omitRun.verification?.status, "fail");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -301,7 +316,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(current?.current_revision, 2);
       assert.equal(current?.publication.status, "not_published");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -334,7 +349,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.deepEqual(await store.readArtifactRevision(run.artifact_id!, 1), original);
       assert.equal((await store.listArtifactRevisions(run.artifact_id!)).length, 3);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -370,13 +385,34 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(existsSync(path.join(repoRoot, "pwned-by-source.txt")), false);
       assert.equal(existsSync(path.join(dir, "pwned-by-source.txt")), false);
       const sources = await walkJs(path.join(repoRoot, "dist", "src"));
-      const bundled = (await Promise.all(sources.map(async (file) => readFile(file, "utf8")))).join("\n");
-      assert.equal(bundled.includes("child_process"), false);
-      assert.equal(bundled.includes("createServer"), false);
-      assert.equal(bundled.includes("node:http"), false);
+      const httpAllowed = new Set([
+        path.normalize(path.join(repoRoot, "dist", "src", "server", "local-http.js")),
+        path.normalize(path.join(repoRoot, "dist", "src", "server", "demo-http.js")),
+      ]);
+      const nonHttp: string[] = [];
+      const httpFiles: string[] = [];
+      for (const file of sources) {
+        const normalized = path.normalize(file);
+        if (httpAllowed.has(normalized)) httpFiles.push(normalized);
+        else nonHttp.push(normalized);
+      }
+      const nonHttpBundled = (await Promise.all(nonHttp.map(async (file) => readFile(file, "utf8")))).join("\n");
+      assert.equal(nonHttpBundled.includes("child_process"), false);
+      assert.equal(nonHttpBundled.includes("createServer"), false);
+      assert.equal(nonHttpBundled.includes("node:http"), false);
+      // Explicit local transport may use node:http; library import and fixture CLI still must not.
+      assert.ok(httpFiles.some((file) => file.endsWith(`${path.sep}local-http.js`)));
+      const localHttp = await readFile(path.join(repoRoot, "dist", "src", "server", "local-http.js"), "utf8");
+      assert.equal(localHttp.includes("createServer"), true);
+      assert.equal(localHttp.includes("node:http"), true);
+      const indexSource = await readFile(path.join(repoRoot, "dist", "src", "index.js"), "utf8");
+      assert.equal(/\blisten\s*\(/.test(indexSource), false);
+      const cliSource = await readFile(path.join(repoRoot, "dist", "src", "cli.js"), "utf8");
+      assert.equal(cliSource.includes("createServer"), false);
+      assert.equal(cliSource.includes("node:http"), false);
     } finally {
       globalThis.fetch = previous;
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -395,7 +431,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(left.publication_status, "not_published");
       assert.equal(left.error.code, "publication_handler_absent");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -462,7 +498,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       const third = await recoverInterruptedRuns(await DevStore.open(dir));
       assert.equal(third.some((item) => item.run_id === abandoned.run.run_id), false);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 
@@ -482,7 +518,7 @@ describe("учебный контракт prepare_draft v0.1", () => {
       assert.equal(library.error.code, "publication_handler_absent");
       assert.equal(library.publication_status, "not_published");
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await removeTemp(dir);
     }
   });
 });

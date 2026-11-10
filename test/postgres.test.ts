@@ -13,6 +13,7 @@ import { ensureRuntimeLogin } from '../src/storage/ensure-runtime-login.js';
 import { applyMigrations, migrationChecksums, type MigrationDb } from '../src/storage/migrate-postgres.js';
 import { migratePostgres } from '../src/storage/migrate-postgres.js';
 import { PostgresStore, type SqlPool } from '../src/storage/postgres-store.js';
+import { verifyHttpApi } from './http-api-cases.js';
 import { verifyLocalApi } from './server-api-cases.js';
 
 /** Disposable password for test login roles. Already used by CI. Not a service secret. */
@@ -383,6 +384,10 @@ test('PostgreSQL session identity, RLS, rollback, revisions and idempotency', as
     await adminQuery("INSERT INTO bos.workspace_membership VALUES ('ws_educational','editor','editor')");
     await t.test('local API: trusted sessions, four operations, denied access and safe responses', async () => {
       await verifyLocalApi(userPool, input);
+    });
+    await t.test('HTTP transport: four operations, auth boundaries and safe responses', async () => {
+      await verifyHttpApi(userPool, input);
+      console.log(native ? 'Native PostgreSQL HTTP transport tested' : 'Embedded PostgreSQL/PGlite HTTP transport tested');
     });
     if (embedded) {
       await embedded.close();
