@@ -36,3 +36,5 @@ export { LocalSessions } from './server/local-sessions.js';
 export type { SessionIdentity } from './server/local-sessions.js';
 export { LocalTaskApi } from './server/local-task-api.js';
 export type { LocalApiResponse } from './server/local-task-api.js';
+export { LocalHttpServer } from './server/local-http.js';
+export type { DispatchApi, LocalHttpListenInfo, LocalHttpServerOptions } from './server/local-http.js';
